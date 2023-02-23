@@ -79,12 +79,51 @@ void setup() {
   Serial.println("Hello World");
 }
 
+void print_binary_V2(uint8_t decimal){
+ 
+ unsigned char* binary = reinterpret_cast<unsigned char*>(&decimal);
+ unsigned char mask = 0x80;
+
+  // Print the binary representation
+  Serial.print("col representation: ");
+  for (int i = 0; i < sizeof(decimal); i++) {
+    for (int j = 0; j < 8; j++) {
+      
+      Serial.print((binary[i] & mask) ? 1 : 0);
+      mask >>= 1;
+    }
+    mask = 0x80;
+  }
+  Serial.println();
+}
+
+void setRow(uint8_t rowIdx){
+
+  digitalWrite(REN_PIN,LOW);
+  digitalWrite(RA0_PIN,(rowIdx >> 0) & 0x01); 
+  digitalWrite(RA1_PIN,(rowIdx >> 1) & 0x01); 
+  digitalWrite(RA2_PIN,(rowIdx >> 2) & 0x01); 
+  digitalWrite(REN_PIN,HIGH); 
+}
+uint8_t readCols(){
+   
+  digitalWrite(REN_PIN,HIGH); 
+  setRow(2); 
+  uint8_t  col_val;
+  col_val |= digitalRead(C0_PIN) << 0;
+  col_val |= digitalRead(C1_PIN) << 1;
+  col_val |= digitalRead(C2_PIN) << 2;
+  col_val |= digitalRead(C3_PIN) << 3;  
+  return col_val; 
+
+}
+
 void loop() {
   // put your main code here, to run repeatedly:
   static uint32_t next = millis();
   static uint32_t count = 0;
 
-  if (millis() > next) {
+  if (millis() > next+1000) {
     next += interval;
 
     //Update display
@@ -97,5 +136,9 @@ void loop() {
 
     //Toggle LED
     digitalToggle(LED_BUILTIN);
+    print_binary_V2(readCols()); 
+    Serial.println(readCols());
+    next = millis(); 
+     
   }
 }
