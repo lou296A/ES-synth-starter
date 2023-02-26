@@ -39,6 +39,67 @@
 //Display driver object
 U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
 
+//multithreading global variable 
+SemaphoreHandle_t keyArrayMutex = xSemaphoreCreateMutex();
+
+
+
+class knob{
+  public: 
+  int32_t knobRotation; 
+  knob(int32_t max_val,int32_t min_val ){
+    max_val = max_val; 
+    min_val = min_val; 
+    
+  }  
+  
+  void update_rotation(uint8_t current_state){
+    
+  
+      //interprter knobs
+      state  = state << 2; // shift the current as previous
+      state   = state | (current_state & 0x03); // introduce the new current 
+      state  = state & 0x0F; // make 4 most significant bit equal to 0
+      switch(state) {
+        case 2: 
+        case 13: 
+        m_knobRotation += 1; 
+        m_lastRotation = 1; 
+        break; 
+        
+        case  7:
+        case 8: 
+       m_knobRotation -= 1 ; 
+        m_lastRotation = -1; 
+        break; 
+        
+        case 3:
+        case 6: 
+        case 12: 
+       m_knobRotation +=  m_lastRotation;
+        break; 
+        
+        default: 
+        break; 
+}
+ if(m_knobRotation < min_val ){
+ m_knobRotation = min_val; 
+ }
+ else if(m_knobRotation > max_val){
+ m_knobRotation = max_val; 
+ }
+  knobRotation = m_knobRotation; 
+ }
+  private:
+    int32_t max_val; 
+    int32_t min_val; 
+    uint8_t state;
+    int8_t  m_lastRotation; 
+    int32_t m_knobRotation;
+
+
+
+};
 //Function to set outputs using key matrix
 void setOutMuxBit(const uint8_t bitIdx, const bool value) {
       digitalWrite(REN_PIN,LOW);
@@ -58,8 +119,6 @@ void setRow(uint8_t rowIdx){
    
 }
 uint8_t readCols(uint8_t  row){
-   
- 
   setRow(row); 
   uint8_t  col_val;
   digitalWrite(REN_PIN,HIGH);
@@ -75,35 +134,86 @@ void sampleISR() {
   static uint32_t phaseAcc = 0;
   phaseAcc += currentStepSize;
   int32_t Vout = (phaseAcc >> 24) - 128;
+  Vout = Vout >> (8 - knob3Rotation); // modify the volume 
   analogWrite(OUTR_PIN, Vout + 128);
 }
 void scanKeysTask(void * pvParameters) {
-  const TickType_t xFrequency = 50/portTICK_PERIOD_MS;
+   
+  const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
   while(1){
    vTaskDelayUntil( &xLastWakeTime, xFrequency );
    uint32_t localCurrentStepSize;
-   for(int i = 0; i < 3 ; i++){
-      keyArray[i] = readCols(i);
+   uint8_t  localKnob3;
+   int8_t  lastRotation;
+   int8_t  localKnob3rotation;
+   
+   
+   //reading input
+   for(int i = 0; i < 4 ; i++){//depending on the number of row(not collumn) i need to be change  
+      xSemaphoreTake(keyArrayMutex, portMAX_DELAY);
+      keyArray[i] = readCols(i); // reading the 4 collum of row i 
+      xSemaphoreGive(keyArrayMutex);
       delayMicroseconds(3);
       }
+
+    // interprter key 
     for(int i = 0; i < 3 ; i++){
-      Serial.println(keyArray[i]); 
+      // Serial.println(keyArray[i]); 
       for(int j = 0; j < 4 ; j++){
-        if(((keyArray[i] >> j) & 0x01) == 0){
-          localCurrentStepSize = stepSizes[i*4+j];
+        if(((keyArray[i] >> j) & 0x01) == 0){//checking if it a key is press which is equivalent to have a bit == 0 
+          localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the array
         }
-    
-      
       }
-    }
+     }
+     
+     uint8_t localKnob3_current = keyArray[3] >> 2; 
+      //interprter knobs
+      localKnob3  = localKnob3 << 2; // shift the current as previous
+      localKnob3  = localKnob3 | (localKnob3_current & 0x03); // introduce the new current 
+      localKnob3  = localKnob3 & 0x0F; // make 4 most significant bit 0
+      switch(localKnob3) {
+        case 2: 
+        case 13: 
+        localKnob3rotation += 1; 
+        lastRotation = 1; 
+        break; 
+        
+        case  7:
+        case 8: 
+        localKnob3rotation -= 1 ; 
+        lastRotation = -1; 
+        break; 
+        
+        case 3:
+        case 6: 
+        case 12: 
+        localKnob3rotation +=  lastRotation;
+        break; 
+        
+        default: 
+        
+        break; 
+}
+ if(localKnob3rotation < 0 ){
+  localKnob3rotation = 0; 
+ }
+ else if(localKnob3rotation > 8 ){
+    localKnob3rotation = 8; 
+ }
+__atomic_store_n(&knob3Rotation, localKnob3rotation , __ATOMIC_RELAXED);
+Serial.print("Knob3Rotation:"); 
+Serial.println(knob3Rotation);
+  
+    
+    
     __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
-    Serial.print("Stepsize:"); 
-    Serial.println(currentStepSize); 
+    localCurrentStepSize = 0; // reseting local step
+    // Serial.print("Stepsize:"); 
+    // Serial.println(currentStepSize); 
   }
 
 }
-
 void displayUpdateTask(void * pvParameters) {
   const TickType_t xFrequency = 1000/portTICK_PERIOD_MS;
    static uint32_t count = 0;
@@ -198,7 +308,7 @@ void print_binary_V2(uint8_t decimal){
       
       Serial.print((binary[i] & mask) ? 1 : 0);
       mask >>= 1;
-    }
+    } 
     mask = 0x80;
   }
   Serial.println();
