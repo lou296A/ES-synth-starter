@@ -42,14 +42,15 @@ U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //multithreading global variable 
 SemaphoreHandle_t keyArrayMutex = xSemaphoreCreateMutex();
 
+// knob
 
 
 class knob{
   public: 
   int32_t knobRotation; 
   knob(int32_t max_val,int32_t min_val ){
-    max_val = max_val; 
-    min_val = min_val; 
+    m_max_val = max_val; 
+    m_min_val = min_val; 
     
   }  
   
@@ -58,41 +59,47 @@ class knob{
   
       //interprter knobs
       state  = state << 2; // shift the current as previous
-      state   = state | (current_state & 0x03); // introduce the new current 
+      state   = state | current_state; // introduce the new current 
       state  = state & 0x0F; // make 4 most significant bit equal to 0
       switch(state) {
         case 2: 
         case 13: 
         m_knobRotation += 1; 
-        m_lastRotation = 1; 
+        m_lastRotation = 1;
+          
         break; 
         
         case  7:
         case 8: 
        m_knobRotation -= 1 ; 
         m_lastRotation = -1; 
+      
+      
         break; 
         
         case 3:
         case 6: 
         case 12: 
        m_knobRotation +=  m_lastRotation;
+       
         break; 
         
         default: 
+        
         break; 
 }
- if(m_knobRotation < min_val ){
- m_knobRotation = min_val; 
+ if(m_knobRotation < m_min_val ){
+   m_knobRotation = m_min_val; 
  }
- else if(m_knobRotation > max_val){
- m_knobRotation = max_val; 
- }
-  knobRotation = m_knobRotation; 
+else if(m_knobRotation > m_max_val){
+m_knobRotation = m_max_val; 
+  }
+
+ __atomic_store_n(&knobRotation,m_knobRotation , __ATOMIC_RELAXED);
  }
   private:
-    int32_t max_val; 
-    int32_t min_val; 
+    int32_t m_max_val; 
+    int32_t m_min_val; 
     uint8_t state;
     int8_t  m_lastRotation; 
     int32_t m_knobRotation;
@@ -100,6 +107,7 @@ class knob{
 
 
 };
+knob knob3(8 ,0); 
 //Function to set outputs using key matrix
 void setOutMuxBit(const uint8_t bitIdx, const bool value) {
       digitalWrite(REN_PIN,LOW);
@@ -134,7 +142,7 @@ void sampleISR() {
   static uint32_t phaseAcc = 0;
   phaseAcc += currentStepSize;
   int32_t Vout = (phaseAcc >> 24) - 128;
-  Vout = Vout >> (8 - knob3Rotation); // modify the volume 
+  Vout = Vout >> (8 - knob3.knobRotation); // modify the volume 
   analogWrite(OUTR_PIN, Vout + 128);
 }
 void scanKeysTask(void * pvParameters) {
@@ -167,43 +175,14 @@ void scanKeysTask(void * pvParameters) {
       }
      }
      
-     uint8_t localKnob3_current = keyArray[3] >> 2; 
+    
+     
       //interprter knobs
-      localKnob3  = localKnob3 << 2; // shift the current as previous
-      localKnob3  = localKnob3 | (localKnob3_current & 0x03); // introduce the new current 
-      localKnob3  = localKnob3 & 0x0F; // make 4 most significant bit 0
-      switch(localKnob3) {
-        case 2: 
-        case 13: 
-        localKnob3rotation += 1; 
-        lastRotation = 1; 
-        break; 
-        
-        case  7:
-        case 8: 
-        localKnob3rotation -= 1 ; 
-        lastRotation = -1; 
-        break; 
-        
-        case 3:
-        case 6: 
-        case 12: 
-        localKnob3rotation +=  lastRotation;
-        break; 
-        
-        default: 
-        
-        break; 
-}
- if(localKnob3rotation < 0 ){
-  localKnob3rotation = 0; 
- }
- else if(localKnob3rotation > 8 ){
-    localKnob3rotation = 8; 
- }
-__atomic_store_n(&knob3Rotation, localKnob3rotation , __ATOMIC_RELAXED);
-Serial.print("Knob3Rotation:"); 
-Serial.println(knob3Rotation);
+       uint8_t localKnob3_current = keyArray[3] >> 2; 
+    knob3.update_rotation(localKnob3_current & 0x03); 
+    
+    //Serial.print("Knob3Rotation:"); 
+  // Serial.println(knob3.knobRotation);
   
     
     
@@ -272,6 +251,9 @@ void setup() {
   sampleTimer->setOverflow(22000, HERTZ_FORMAT);
   sampleTimer->attachInterrupt(sampleISR);
   sampleTimer->resume();
+  //instatiate knob
+  
+  
   
   
   //multithreading
