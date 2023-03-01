@@ -1,10 +1,11 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
 #include <STM32FreeRTOS.h>
+#define OCTAVE_NUM 4; 
 
 //Constants
   const uint32_t interval = 100; //Display update interval
-
+  
 //Pin definitions
   //Row select and enable
   const int RA0_PIN = D3;
@@ -42,7 +43,8 @@ U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
 //multithreading global variable 
 SemaphoreHandle_t keyArrayMutex = xSemaphoreCreateMutex();
 
-// knob
+// CAN bus protocol 
+volatile uint8_t TX_Message[8] = {0}; 
 
 
 class knob{
@@ -104,8 +106,6 @@ m_knobRotation = m_max_val;
     int8_t  m_lastRotation; 
     int32_t m_knobRotation;
 
-
-
 };
 knob knob3(8 ,0); 
 //Function to set outputs using key matrix
@@ -155,6 +155,7 @@ void scanKeysTask(void * pvParameters) {
    uint8_t  localKnob3;
    int8_t  lastRotation;
    int8_t  localKnob3rotation;
+   uint8_t l_prevkeystate[3];
    
    
    //reading input
@@ -165,31 +166,50 @@ void scanKeysTask(void * pvParameters) {
       delayMicroseconds(3);
       }
 
+
+
     // interprter key 
     for(int i = 0; i < 3 ; i++){
       // Serial.println(keyArray[i]); 
       for(int j = 0; j < 4 ; j++){
         if(((keyArray[i] >> j) & 0x01) == 0){//checking if it a key is press which is equivalent to have a bit == 0 
+
           localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the array
+          
+          if(((l_prevkeystate[i] >> j) & 0x01) == 1){
+            TX_Message[0] = 'P';
+            TX_Message[1] = OCTAVE_NUM;
+            TX_Message[2] = i*4+j;
+            Serial.println(l_prevkeystate[i]);
+            }
+          }
+        
+        else if(((l_prevkeystate[i] >> j) & 0x01) == 0) {
+            Serial.println("enter release loop"); 
+            TX_Message[0] = 'R';
+            TX_Message[1] = OCTAVE_NUM;
+            TX_Message[2] = i*4+j;
         }
+        
       }
+      l_prevkeystate[i] =  keyArray[i];
+    
      }
-     
+      
+  
+
     
-     
-      //interprter knobs
-       uint8_t localKnob3_current = keyArray[3] >> 2; 
+     //interprter knobs3
+    uint8_t localKnob3_current = keyArray[3] >> 2; 
     knob3.update_rotation(localKnob3_current & 0x03); 
-    
     //Serial.print("Knob3Rotation:"); 
   // Serial.println(knob3.knobRotation);
-  
-    
-    
     __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
     localCurrentStepSize = 0; // reseting local step
     // Serial.print("Stepsize:"); 
     // Serial.println(currentStepSize); 
+
+   
   }
 
 }
@@ -203,9 +223,19 @@ void displayUpdateTask(void * pvParameters) {
     u8g2.clearBuffer();         // clear the internal memory
     u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
     u8g2.drawStr(2,10,"Helllo World!");  // write something to the internal memory
-    u8g2.setCursor(2,20);
-    u8g2.print(count++);
-    u8g2.sendBuffer();          // transfer internal memory to the display
+    // u8g2.setCursor(2,20);
+    // u8g2.print(count++);
+
+
+    u8g2.setCursor(66,30);
+    u8g2.print((char) TX_Message[0]);
+    u8g2.print(TX_Message[1]);
+    u8g2.print(TX_Message[2]);
+
+     u8g2.sendBuffer();          // transfer internal memory to the display
+
+    // print CAN BUS message
+   
 
     //Toggle LED
     digitalToggle(LED_BUILTIN);
