@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <U8g2lib.h>
+#include <cmath>
 #include <STM32FreeRTOS.h>
+#include <ES_CAN.h>
 #define OCTAVE_NUM 4; 
 
 //Constants
@@ -35,16 +37,42 @@
   const int HKOE_BIT = 6;
   //generating sound 
   const uint32_t stepSizes [] = {68178701,	72231588,	76528508,	81077269,	85899345,	91006452,	96418111,	102151892,	108227319,	114661960,	121479245,	128702599};
+  const uint32_t sin_StepSizes [] = {3,3,3,3,3,4,4,4,4,5,5,5};
   volatile uint32_t currentStepSize;
   volatile uint8_t keyArray[7];
+  volatile uint8_t current_counter; 
+  volatile uint8_t sin_step;
+
+  #define SINE_LUT_SIZE 256
+
+const int32_t sine_wave_array[SINE_LUT_SIZE] =  {0,52701886,105372028,157978697,210490205,262874923,315101294,367137860,418953276,470516330,521795962,572761285,623381597,673626407,723465451,772868705,821806412,870249094,918167571,965532977,1012316783,1058490807,1104027236,1148898639,1193077990,1236538674,1279254514,1321199779,1362349203,1402677998,1442161873,1480777043,1518500249,1555308767,1591180424,1626093615,1660027307,1692961061,1724875039,1755750016,1785567395,1814309215,1841958163,1868497584,1893911493,1918184579,1941302224,1963250500,1984016187,2003586778,2021950482,2039096240,2055013722,2069693340,2083126253,2095304368,2106220350,2115867624,2124240379,2131333570,2137142926,2141664947,2144896908,2146836865,2147483647,2146836865,2144896908,2141664947,2137142926,2131333570,2124240379,2115867624,2106220350,2095304368,2083126253,2069693340,2055013722,2039096240,2021950482,2003586778,1984016187,1963250500,1941302224,1918184579,1893911493,1868497584,1841958163,1814309215,1785567395,1755750016,1724875039,1692961061,1660027307,1626093615,1591180424,1555308767,1518500249,1480777043,1442161873,1402677998,1362349203,1321199779,1279254514,1236538674,1193077990,1148898639,1104027236,1058490807,1012316783,965532977,918167571,870249094,821806412,772868705,723465451,673626407,623381597,572761285,521795962,470516330,418953276,367137860,315101294,262874923,210490205,157978697,105372028,52701886,0,-52701886,-105372028,-157978697,-210490205,-262874923,-315101294,-367137860,-418953276,-470516330,-521795962,-572761285,-623381597,-673626407,-723465451,-772868705,-821806412,-870249094,-918167571,-965532977,-1012316783,-1058490807,-1104027236,-1148898639,-1193077990,-1236538674,-1279254514,-1321199779,-1362349203,-1402677998,-1442161873,-1480777043,-1518500249,-1555308767,-1591180424,-1626093615,-1660027307,-1692961061,-1724875039,-1755750016,-1785567395,-1814309215,-1841958163,-1868497584,-1893911493,-1918184579,-1941302224,-1963250500,-1984016187,-2003586778,-2021950482,-2039096240,-2055013722,-2069693340,-2083126253,-2095304368,-2106220350,-2115867624,-2124240379,-2131333570,-2137142926,-2141664947,-2144896908,-2146836865,-2147483647,-2146836865,-2144896908,-2141664947,-2137142926,-2131333570,-2124240379,-2115867624,-2106220350,-2095304368,-2083126253,-2069693340,-2055013722,-2039096240,-2021950482,-2003586778,-1984016187,-1963250500,-1941302224,-1918184579,-1893911493,-1868497584,-1841958163,-1814309215,-1785567395,-1755750016,-1724875039,-1692961061,-1660027307,-1626093615,-1591180424,-1555308767,-1518500249,-1480777043,-1442161873,-1402677998,-1362349203,-1321199779,-1279254514,-1236538674,-1193077990,-1148898639,-1104027236,-1058490807,-1012316783,-965532977,-918167571,-870249094,-821806412,-772868705,-723465451,-673626407,-623381597,-572761285,-521795962,-470516330,-418953276,-367137860,-315101294,-262874923,-210490205,-157978697,-105372028,-52701886};
+
 //Display driver object
 U8G2_SSD1305_128X32_NONAME_F_HW_I2C u8g2(U8G2_R0);
 
 //multithreading global variable 
-SemaphoreHandle_t keyArrayMutex = xSemaphoreCreateMutex();
+SemaphoreHandle_t keyArrayMutex;
+SemaphoreHandle_t RXMessageMutex; 
+SemaphoreHandle_t KnobMutex;
+SemaphoreHandle_t RXMutex;
+
 
 // CAN bus protocol 
-volatile uint8_t TX_Message[8] = {0}; 
+uint8_t Key_press[8] = {0}; 
+QueueHandle_t msgInQ;
+QueueHandle_t msgOutQ;
+SemaphoreHandle_t CAN_TX_Semaphore;
+
+
+
+// different waveform
+uint8_t WAVEFORM = 0; 
+#define SAWTOOTH 0
+#define SIN 1
+#define RECTANGLE 2
+#define TRIG 3
+//knob
+
 
 
 class knob{
@@ -108,6 +136,7 @@ m_knobRotation = m_max_val;
 
 };
 knob knob3(8 ,0); 
+knob knob2(1,0);
 //Function to set outputs using key matrix
 void setOutMuxBit(const uint8_t bitIdx, const bool value) {
       digitalWrite(REN_PIN,LOW);
@@ -139,109 +168,215 @@ uint8_t readCols(uint8_t  row){
 
 }
 void sampleISR() {
+  static uint32_t phase_sin = 0; 
+  static uint8_t sin_i = 0; 
   static uint32_t phaseAcc = 0;
-  phaseAcc += currentStepSize;
-  int32_t Vout = (phaseAcc >> 24) - 128;
-  Vout = Vout >> (8 - knob3.knobRotation); // modify the volume 
-  analogWrite(OUTR_PIN, Vout + 128);
+  int32_t Vout; 
+  int32_t sin_out; 
+
+  if(WAVEFORM == 0){
+    phaseAcc += currentStepSize;
+    Vout = (phaseAcc >> 24) - 128;
+    
+  }
+  else if (WAVEFORM == 1){
+    sin_i += sin_step;
+    sin_out = sine_wave_array[sin_i];
+    Vout = (sin_out >> 24); 
+  }
+  
+  Vout = (Vout >> (8-knob3.knobRotation)); // modify the volume 
+  analogWrite(OUTR_PIN, Vout  + 128 );
+}
+void CAN_RX_ISR (void) {
+	uint8_t RX_Message_ISR[8];
+	uint32_t ID;
+	CAN_RX(ID, RX_Message_ISR);
+	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
+}
+void CAN_TX_ISR (void) {
+	xSemaphoreGiveFromISR(CAN_TX_Semaphore, NULL);
 }
 void scanKeysTask(void * pvParameters) {
    
   const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
   while(1){
-   vTaskDelayUntil( &xLastWakeTime, xFrequency );
-   uint32_t localCurrentStepSize;
-   uint8_t  localKnob3;
-   int8_t  lastRotation;
-   int8_t  localKnob3rotation;
-   uint8_t l_prevkeystate[3];
-   
-   
-   //reading input
-   for(int i = 0; i < 4 ; i++){//depending on the number of row(not collumn) i need to be change  
-      xSemaphoreTake(keyArrayMutex, portMAX_DELAY);
-      keyArray[i] = readCols(i); // reading the 4 collum of row i 
-      xSemaphoreGive(keyArrayMutex);
-      delayMicroseconds(3);
-      }
-
-
-
-    // interprter key 
-    for(int i = 0; i < 3 ; i++){
-      // Serial.println(keyArray[i]); 
-      for(int j = 0; j < 4 ; j++){
-        if(((keyArray[i] >> j) & 0x01) == 0){//checking if it a key is press which is equivalent to have a bit == 0 
-
-          localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the array
-          
-          if(((l_prevkeystate[i] >> j) & 0x01) == 1){
-            TX_Message[0] = 'P';
-            TX_Message[1] = OCTAVE_NUM;
-            TX_Message[2] = i*4+j;
-            Serial.println(l_prevkeystate[i]);
-            }
-          }
-        
-        else if(((l_prevkeystate[i] >> j) & 0x01) == 0) {
-            Serial.println("enter release loop"); 
-            TX_Message[0] = 'R';
-            TX_Message[1] = OCTAVE_NUM;
-            TX_Message[2] = i*4+j;
-        }
-        
-      }
-      l_prevkeystate[i] =  keyArray[i];
+    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    uint32_t localCurrentStepSize;
+    uint8_t  localKnob3;
+    int8_t  lastRotation;
+    int8_t  localKnob3rotation;
+    uint8_t l_prevkeystate[3];
+    uint8_t localsinstep; 
+    uint8_t localTxmes[8]  = {0}; 
+    bool press_state;
+    uint32_t ID;
     
-     }
+    
+    
+    //reading input
+    for(int i = 0; i < 4 ; i++){//depending on the number of row(not collumn) i need to be change  
+        keyArray[i] = readCols(i); // reading the 4 collum of row i 
+        delayMicroseconds(3);
+    }
+
+      // interprter key 
+      for(int i = 0; i < 3 ; i++){
       
-  
+        for(int j = 0; j < 4 ; j++){
+          if(((keyArray[i] >> j) & 0x01) == 0){//checking if it a key is press which is equivalent to have a bit == 0 
+            press_state = 1; // see if a key as been pressed or not if not the global step size won't be written 
+            switch(WAVEFORM){
+            case SAWTOOTH: localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the array
+            case SIN: localsinstep = sin_StepSizes[i*4+j];
+            case RECTANGLE: ;
+            case TRIG: ;
+            }
+          if(((l_prevkeystate[i] >> j) & 0x01) == 1){
+              localTxmes[0] = 'P';
+              localTxmes[1] = OCTAVE_NUM;
+              localTxmes[2] = i*4+j;
+              xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
+              Key_press[0] = localTxmes[0] ; 
+              Key_press[1] = localTxmes[1] ; 
+              Key_press[2] = localTxmes[2] ; 
+              xSemaphoreGive(RXMessageMutex);
+              }
+            }
+          else if(((l_prevkeystate[i] >> j) & 0x01) == 0) {
+              localTxmes[0] = 'R';
+              localTxmes[1] = OCTAVE_NUM;
+              localTxmes[2] = i*4+j;
+              xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
+                Key_press[0] = localTxmes[0] ; 
+                Key_press[1] = localTxmes[1] ; 
+                Key_press[2] = localTxmes[2] ; 
+              xSemaphoreGive(RXMessageMutex);
+             
+              __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+          }
+          
+        }
+        l_prevkeystate[i] =  keyArray[i];
+      }
+     
+      //Knob reading 
+      uint8_t localKnob3_current = keyArray[3] >> 2;
+      uint8_t localKnob2_current = keyArray[3]; 
+      
+      xSemaphoreTake(KnobMutex, portMAX_DELAY); 
+      knob3.update_rotation(localKnob3_current & 0x03); 
+      knob2.update_rotation(localKnob2_current & 0x03); 
+      WAVEFORM =  knob2.knobRotation;
+      xSemaphoreGive(KnobMutex); 
 
     
-     //interprter knobs3
-    uint8_t localKnob3_current = keyArray[3] >> 2; 
-    knob3.update_rotation(localKnob3_current & 0x03); 
-    //Serial.print("Knob3Rotation:"); 
-  // Serial.println(knob3.knobRotation);
-    __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
-    localCurrentStepSize = 0; // reseting local step
-    // Serial.print("Stepsize:"); 
-    // Serial.println(currentStepSize); 
-
+      
+      
+      //OUT
+      xQueueSend( msgOutQ, localTxmes, portMAX_DELAY);
+      localTxmes[0] = 'M';
    
+
+
+      if(localCurrentStepSize != 0){
+    
+      if(WAVEFORM == 0){
+       
+         __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+        press_state = 0; 
+        localCurrentStepSize = 0;
+        
+        }
+      else if (WAVEFORM == 1){
+        __atomic_store_n(&sin_step, localsinstep, __ATOMIC_RELAXED);
+        localsinstep = 0; 
+      }
+      }
+      
+      
+    
+      
+      
   }
 
 }
 void displayUpdateTask(void * pvParameters) {
-  const TickType_t xFrequency = 1000/portTICK_PERIOD_MS;
-   static uint32_t count = 0;
+  const TickType_t xFrequency = 100/portTICK_PERIOD_MS;
+  static uint32_t count = 0;
   TickType_t xLastWakeTime = xTaskGetTickCount(); 
   while(1){
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
     //Update display
     u8g2.clearBuffer();         // clear the internal memory
     u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
-    u8g2.drawStr(2,10,"Helllo World!");  // write something to the internal memory
-    // u8g2.setCursor(2,20);
-    // u8g2.print(count++);
-
-
-    u8g2.setCursor(66,30);
-    u8g2.print((char) TX_Message[0]);
-    u8g2.print(TX_Message[1]);
-    u8g2.print(TX_Message[2]);
-
-     u8g2.sendBuffer();          // transfer internal memory to the display
-
-    // print CAN BUS message
+    u8g2.drawStr(2,10,"state/octave/key");  // write something to the internal memory
+    u8g2.setCursor(100,10);
    
+   //key display 
+   xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
+     u8g2.print((char) Key_press[0]);
+     u8g2.print(Key_press[1]);
+     u8g2.print(Key_press[2]);
+   xSemaphoreGive(RXMessageMutex); 
+ 
+  //wave and volume display
+    xSemaphoreTake(KnobMutex, portMAX_DELAY); 
+    u8g2.drawStr(2,20,"volume");
+    u8g2.setCursor(50,20);
+    u8g2.print(knob3.knobRotation,HEX);
+    u8g2.drawStr(60,20,"wave");
+    u8g2.setCursor(90,20);
+    u8g2.print(knob2.knobRotation,HEX);
+    u8g2.sendBuffer(); 
+    xSemaphoreGive(KnobMutex);
+  
 
     //Toggle LED
     digitalToggle(LED_BUILTIN);
   
 
   }
+}
+void decodeTask(void * pvParameters){
+  uint32_t localCurrentStepSize ;
+  uint8_t l_RXMessage[8] = {0};
+  while(1){
+    xQueueReceive(msgInQ, l_RXMessage, portMAX_DELAY);
+    if(l_RXMessage[0] == 'R'){
+      localCurrentStepSize = 0;
+       __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+       xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
+          Key_press[0] = l_RXMessage[0] ; 
+          Key_press[1] = l_RXMessage[1] ; 
+          Key_press[2] = l_RXMessage[2] ; 
+       xSemaphoreGive(RXMessageMutex);
+    }
+    else if(l_RXMessage[0] == 'P'){
+      localCurrentStepSize = stepSizes[l_RXMessage[2]];
+      xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
+        Key_press[0] = l_RXMessage[0] ; 
+        Key_press[1] = l_RXMessage[1] ; 
+        Key_press[2] = l_RXMessage[2] ; 
+      xSemaphoreGive(RXMessageMutex);
+      // 
+    }
+    if(localCurrentStepSize != 0){
+      __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
+      localCurrentStepSize = 0;
+    }
+
+
+  }
+}
+void CAN_TX_Task (void * pvParameters) {
+	uint8_t msgOut[8];
+	while (1) {
+	xQueueReceive(msgOutQ, msgOut, portMAX_DELAY);
+		xSemaphoreTake(CAN_TX_Semaphore, portMAX_DELAY);
+		CAN_TX(0x123, msgOut);
+	}
 }
 void setup() {
   // put your setup code here, to run once:
@@ -281,13 +416,27 @@ void setup() {
   sampleTimer->setOverflow(22000, HERTZ_FORMAT);
   sampleTimer->attachInterrupt(sampleISR);
   sampleTimer->resume();
-  //instatiate knob
+  //instatiate CAN
+  msgInQ = xQueueCreate(36,8);
+  msgOutQ = xQueueCreate(36,8);
+ 
+  CAN_Init(false);
+  setCANFilter(0x123,0x7ff);
+  CAN_RegisterRX_ISR(CAN_RX_ISR);
+  CAN_RegisterTX_ISR(CAN_TX_ISR);
+  CAN_Start();
   
+ 
+
   
   
   
   //multithreading
     //multithreading for scankey
+KnobMutex = xSemaphoreCreateMutex();
+keyArrayMutex = xSemaphoreCreateMutex();
+RXMessageMutex = xSemaphoreCreateMutex();
+CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
 TaskHandle_t scanKeysHandle = NULL;
 xTaskCreate(
 scanKeysTask,		/* Function that implements the task */
@@ -305,9 +454,39 @@ displayUpdateTask,		/* Function that implements the task */
 256,      		/* Stack size in words, not bytes */
 NULL,			/* Parameter passed into the task */
 1,			/* Task priority */
-&displayUpdateHandle);  /* Pointer to store the task handle */
+&displayUpdateHandle); /* Pointer to store the task handle */
+
+TaskHandle_t decodeDataHandle = NULL;
+xTaskCreate(
+  decodeTask, 
+  "decodeTX", 
+  256, 
+  NULL, 
+  3, //temporary 
+  &decodeDataHandle);
+
+
+TaskHandle_t CantxHandle = NULL;
+xTaskCreate(
+  CAN_TX_Task, 
+  "decodeTX", 
+  256, 
+  NULL, 
+  3, //temporary 
+  & CantxHandle );
+
 vTaskStartScheduler();
+
+
+
 }
+
+
+
+
+
+
+
 void print_binary_V2(uint8_t decimal){
  
  unsigned char* binary = reinterpret_cast<unsigned char*>(&decimal);
@@ -325,4 +504,7 @@ void print_binary_V2(uint8_t decimal){
   }
   Serial.println();
 }
+// generate sin wave 
 void loop() {}
+
+    
