@@ -38,6 +38,7 @@
   //generating sound 
   const uint32_t stepSizes [] = {68178701,	72231588,	76528508,	81077269,	85899345,	91006452,	96418111,	102151892,	108227319,	114661960,	121479245,	128702599};
   const uint32_t sin_StepSizes [] = {3,3,3,3,3,4,4,4,4,5,5,5};
+  
   volatile uint32_t currentStepSize;
   volatile uint8_t keyArray[7];
   volatile uint8_t current_counter; 
@@ -62,6 +63,8 @@ uint8_t Key_press[8] = {0};
 QueueHandle_t msgInQ;
 QueueHandle_t msgOutQ;
 SemaphoreHandle_t CAN_TX_Semaphore;
+boolean west; 
+boolean east;
 
 
 
@@ -155,15 +158,15 @@ void setRow(uint8_t rowIdx){
   digitalWrite(RA2_PIN,(rowIdx >> 2) & 0x01); 
    
 }
-uint8_t readCols(uint8_t  row){
-  setRow(row); 
+uint8_t readCols(){
+  
   uint8_t  col_val;
-  digitalWrite(REN_PIN,HIGH);
+  
   col_val |= digitalRead(C0_PIN) << 0;
   col_val |= digitalRead(C1_PIN) << 1;
   col_val |= digitalRead(C2_PIN) << 2;
   col_val |= digitalRead(C3_PIN) << 3;  
-  digitalWrite(REN_PIN,LOW);
+
   return col_val; 
 
 }
@@ -210,15 +213,22 @@ void scanKeysTask(void * pvParameters) {
     uint8_t l_prevkeystate[3];
     uint8_t localsinstep; 
     uint8_t localTxmes[8]  = {0}; 
-    bool press_state;
     uint32_t ID;
+    boolean outBits[7] = {0,0,0,1,1,0,1}; 
+    boolean l_west; 
+    boolean l_east;
+    
     
     
     
     //reading input
-    for(int i = 0; i < 4 ; i++){//depending on the number of row(not collumn) i need to be change  
-        keyArray[i] = readCols(i); // reading the 4 collum of row i 
-        delayMicroseconds(3);
+    for(int i = 0; i < 7 ; i++){//depending on the number of row(not collumn) i need to be change  
+      setRow(i);                     //Set row address
+      digitalWrite(OUT_PIN,outBits[i]); //Set value to latch in DFF
+      digitalWrite(REN_PIN,1);          //Enable selected row
+      delayMicroseconds(3);             //Wait for column inputs to stabilise
+      keyArray[i] = readCols();         //Read column inputs
+      digitalWrite(REN_PIN,0);          //Disable selected row // reading the 4 collum of row i 
     }
 
       // interprter key 
@@ -226,7 +236,6 @@ void scanKeysTask(void * pvParameters) {
       
         for(int j = 0; j < 4 ; j++){
           if(((keyArray[i] >> j) & 0x01) == 0){//checking if it a key is press which is equivalent to have a bit == 0 
-            press_state = 1; // see if a key as been pressed or not if not the global step size won't be written 
             switch(WAVEFORM){
             case SAWTOOTH: localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the array
             case SIN: localsinstep = sin_StepSizes[i*4+j];
@@ -260,7 +269,13 @@ void scanKeysTask(void * pvParameters) {
         }
         l_prevkeystate[i] =  keyArray[i];
       }
-     
+
+      // 
+      l_west = ~(keyArray[5]>>3) & 0x01; 
+      l_east = ~(keyArray[6]>>3) & 0x01; 
+      
+      
+      // Serial.print(keyArray[5]);
       //Knob reading 
       uint8_t localKnob3_current = keyArray[3] >> 2;
       uint8_t localKnob2_current = keyArray[3]; 
@@ -268,15 +283,15 @@ void scanKeysTask(void * pvParameters) {
       xSemaphoreTake(KnobMutex, portMAX_DELAY); 
       knob3.update_rotation(localKnob3_current & 0x03); 
       knob2.update_rotation(localKnob2_current & 0x03); 
+      west = l_west; 
+      east = l_east; 
       WAVEFORM =  knob2.knobRotation;
       xSemaphoreGive(KnobMutex); 
-
-    
-      
       
       //OUT
       xQueueSend( msgOutQ, localTxmes, portMAX_DELAY);
-      localTxmes[0] = 'M';
+      localTxmes[0] = 'M'; // this is just a Random value different from P or R which is quite important 
+
    
 
 
@@ -285,7 +300,6 @@ void scanKeysTask(void * pvParameters) {
       if(WAVEFORM == 0){
        
          __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
-        press_state = 0; 
         localCurrentStepSize = 0;
         
         }
@@ -321,20 +335,28 @@ void displayUpdateTask(void * pvParameters) {
      u8g2.print(Key_press[2]);
    xSemaphoreGive(RXMessageMutex); 
  
-  //wave and volume display
+  // wave and volume display
     xSemaphoreTake(KnobMutex, portMAX_DELAY); 
+    //knob
     u8g2.drawStr(2,20,"volume");
     u8g2.setCursor(50,20);
     u8g2.print(knob3.knobRotation,HEX);
     u8g2.drawStr(60,20,"wave");
     u8g2.setCursor(90,20);
     u8g2.print(knob2.knobRotation,HEX);
-    u8g2.sendBuffer(); 
+    
+    //can 
+    u8g2.drawStr(2,30,"East");
+    u8g2.setCursor(50,30);
+    u8g2.print(east,HEX);
+    u8g2.drawStr(60,30,"West");
+    u8g2.setCursor(90,30);
+    u8g2.print(west,HEX);
     xSemaphoreGive(KnobMutex);
-  
+    u8g2.sendBuffer(); 
 
     //Toggle LED
-    digitalToggle(LED_BUILTIN);
+     digitalToggle(LED_BUILTIN);
   
 
   }
@@ -480,12 +502,6 @@ vTaskStartScheduler();
 
 
 }
-
-
-
-
-
-
 
 void print_binary_V2(uint8_t decimal){
  
