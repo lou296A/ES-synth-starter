@@ -174,6 +174,7 @@ void sampleISR() {
   static uint32_t phase_sin = 0; 
   static uint8_t sin_i = 0; 
   static uint32_t phaseAcc = 0;
+  if((east == 1 && west == 0)||(east == 0 && west == 0)){
   int32_t Vout; 
   int32_t sin_out; 
 
@@ -190,12 +191,15 @@ void sampleISR() {
   
   Vout = (Vout >> (8-knob3.knobRotation)); // modify the volume 
   analogWrite(OUTR_PIN, Vout  + 128 );
+  }
 }
 void CAN_RX_ISR (void) {
+
 	uint8_t RX_Message_ISR[8];
 	uint32_t ID;
 	CAN_RX(ID, RX_Message_ISR);
 	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
+
 }
 void CAN_TX_ISR (void) {
 	xSemaphoreGiveFromISR(CAN_TX_Semaphore, NULL);
@@ -214,7 +218,7 @@ void scanKeysTask(void * pvParameters) {
     uint8_t localsinstep; 
     uint8_t localTxmes[8]  = {0}; 
     uint32_t ID;
-    boolean outBits[7] = {0,0,0,1,1,0,1}; 
+    boolean outBits[7] = {0,0,0,1,1,1,1}; 
     boolean l_west; 
     boolean l_east;
     
@@ -289,16 +293,16 @@ void scanKeysTask(void * pvParameters) {
       xSemaphoreGive(KnobMutex); 
       
       //OUT
+      if(l_west == 1){
       xQueueSend( msgOutQ, localTxmes, portMAX_DELAY);
       localTxmes[0] = 'M'; // this is just a Random value different from P or R which is quite important 
-
+      }
    
 
-
+      // waveform function
       if(localCurrentStepSize != 0){
     
       if(WAVEFORM == 0){
-       
          __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
         localCurrentStepSize = 0;
         
@@ -321,7 +325,9 @@ void displayUpdateTask(void * pvParameters) {
   static uint32_t count = 0;
   TickType_t xLastWakeTime = xTaskGetTickCount(); 
   while(1){
+    
     vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    if((east == 1 && west == 0)||(east == 0 && west == 0)){
     //Update display
     u8g2.clearBuffer();         // clear the internal memory
     u8g2.setFont(u8g2_font_ncenB08_tr); // choose a suitable font
@@ -360,12 +366,15 @@ void displayUpdateTask(void * pvParameters) {
   
 
   }
+  }
 }
 void decodeTask(void * pvParameters){
   uint32_t localCurrentStepSize ;
   uint8_t l_RXMessage[8] = {0};
   while(1){
+    
     xQueueReceive(msgInQ, l_RXMessage, portMAX_DELAY);
+    if(east == 1 && west == 0){
     if(l_RXMessage[0] == 'R'){
       localCurrentStepSize = 0;
        __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
@@ -387,6 +396,7 @@ void decodeTask(void * pvParameters){
     if(localCurrentStepSize != 0){
       __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
       localCurrentStepSize = 0;
+    }
     }
 
 
@@ -502,7 +512,6 @@ vTaskStartScheduler();
 
 
 }
-
 void print_binary_V2(uint8_t decimal){
  
  unsigned char* binary = reinterpret_cast<unsigned char*>(&decimal);
