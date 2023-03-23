@@ -3,10 +3,34 @@
 #include <cmath>
 #include <STM32FreeRTOS.h>
 #include <ES_CAN.h>
+#include "ADSR.h"
+#include "FILTER.h"
+#include "ECHO.h"
+// //#include "bsp_dma.h"
+//#include "POLYPHONY.h"
+// //#include <ES_CAN.h>
 #define OCTAVE_NUM 4; 
+const uint32_t sampleRate = 22000; 
+
+
+// // define the different modes
+#define NORMAL_MODE       0
+#define ADSR_MODE         1
+#define FILTER_MODE       2
+#define ECHO_MODE         3
+#define POLYPHONY_MODE    4
+
+#define MODE_MAX          4
+
+// define the variables for mode selecting
+int32_t Joystick_Y;
+int8_t Actual_mode = 0;
+int8_t mode_display = 0;
+// The global mutex for mode selection
+SemaphoreHandle_t ModeselectionMutex;
 
 //define the task that will be used: 
-// #define CAN_TX
+//#define CAN_TX
 //#define CAN_RX
 //#define DISPLAY_TASK 
 //#define scankeys
@@ -45,6 +69,15 @@
   const uint32_t stepSizes [] = {68178701,	72231588,	76528508,	81077269,	85899345,	91006452,	96418111,	102151892,	108227319,	114661960,	121479245,	128702599};
   const uint32_t sin_StepSizes [] = {3,3,3,3,3,4,4,4,4,5,5,5};
   
+
+  //advance feature
+  FILTER filter1;
+  Echo echo; 
+  // POLYPHONY polyphony1;
+  ADSR adsr1(0, 0.3, 0.1, 0.2, 0.5);
+
+
+
   volatile uint32_t currentStepSize;
   volatile uint8_t keyArray[7];
   volatile uint8_t current_counter; 
@@ -144,8 +177,10 @@ m_knobRotation = m_max_val;
     int32_t m_knobRotation;
 
 };
-knob knob3(8 ,0); 
-knob knob2(1,0);
+knob knob1(8,0); // filter
+knob knob3(8 ,0); // volume 
+knob knob2(1,0); // wave 
+knob knob0(8,0); // high pass
 //Function to set outputs using key matrix
 void setOutMuxBit(const uint8_t bitIdx, const bool value) {
       digitalWrite(REN_PIN,LOW);
@@ -177,27 +212,56 @@ uint8_t readCols(){
 
 }
 void sampleISR() {
-  static uint32_t phase_sin = 0; 
-  static uint8_t sin_i = 0; 
-  static uint32_t phaseAcc = 0;
-  if((east == 1 && west == 0)||(east == 0 && west == 0)){
-  int32_t Vout; 
-  int32_t sin_out; 
+    static uint32_t phaseAcc = 0;
+  phaseAcc += currentStepSize;
+  //phaseAcc += polyphony1.do_Polyphony();
+  // phaseAcc += ((Actual_mode == POLYPHONY_MODE) ? polyphony1.do_Polyphony() : currentStepSize);
+  //uint32_t currentStepSize_1 = currentStepSize;
+  //int32_t Vout = (phaseAcc >> 24) - 128;
+  //Vout = Vout >> (8 - knob_rotation);
+  //Serial.println(currentStepSize);
+  //int32_t Vout = adsr1.Do_ADSR(phaseAcc, polyphony1.do_Polyphony());
+  int32_t Vout = ((Actual_mode == NORMAL_MODE) || (Actual_mode == POLYPHONY_MODE) || (Actual_mode == FILTER_MODE)) ? ((phaseAcc >> 24) - 128) : adsr1.Do_ADSR(phaseAcc, currentStepSize);
+  //check = adsr1.Check(currentStepSize);
+  if(Actual_mode == FILTER_MODE)
+  {
+    Vout = filter1.LowPassFilter(Vout, knob1.knobRotation);
+    Vout = filter1.HighPassFilter(Vout, knob0.knobRotation);
+  }
+  //
+  if(Actual_mode == ECHO_MODE){Vout = echo.do_Echo(Vout, currentStepSize);}
+  //Vout = echo.do_Echo(Vout, polyphony1.do_Polyphony());
+  Vout = Vout >> (8 - knob3.knobRotation);
 
-  if(WAVEFORM == 0){
-    phaseAcc += currentStepSize;
-    Vout = (phaseAcc >> 24) - 128;
-    
-  }
-  else if (WAVEFORM == 1){
-    sin_i += sin_step;
-    sin_out = sine_wave_array[sin_i];
-    Vout = (sin_out >> 24); 
-  }
+  //
+  if((Actual_mode == NORMAL_MODE) || (Actual_mode == POLYPHONY_MODE) || (Actual_mode == FILTER_MODE)){analogWrite(OUTR_PIN, Vout+128);}
+  else{analogWrite(OUTR_PIN, Vout);}
   
-  Vout = (Vout >> (8-knob3.knobRotation)); // modify the volume 
-  analogWrite(OUTR_PIN, Vout  + 128 );
-  }
+
+  // static uint32_t phase_sin = 0; 
+  // static uint8_t sin_i = 0; 
+  // static uint32_t phaseAcc = 0;
+  // if((east == 1 && west == 0)||(east == 0 && west == 0)){
+  // int32_t Vout; 
+  // int32_t sin_out; 
+
+  // if(WAVEFORM == 0){
+  //   phaseAcc += currentStepSize;
+  //   Vout = (phaseAcc >> 24) - 128;
+  //   Vout = filter1.LowPassFilter(Vout, knob1.knobRotation);
+  //   Vout = filter1.HighPassFilter(Vout, knob0.knobRotation);
+
+    
+  // }
+  // else if (WAVEFORM == 1){
+  //   sin_i += sin_step;
+  //   sin_out = sine_wave_array[sin_i];
+  //   Vout = (sin_out >> 24); 
+  // }
+  
+  // Vout = (Vout >> (8-knob3.knobRotation)); // modify the volume 
+  // analogWrite(OUTR_PIN, Vout  + 128 );
+  // }
 }
 
 #ifndef CAN_RX
@@ -296,11 +360,15 @@ void scanKeysTask(void * pvParameters) {
       // Serial.print(keyArray[5]);
       //Knob reading 
       uint8_t localKnob3_current = keyArray[3] >> 2;
-      uint8_t localKnob2_current = keyArray[3]; 
+      uint8_t localKnob2_current = keyArray[3];
+      uint8_t localKnob1_current = keyArray[4] >> 2; 
+      uint8_t localKnob0_current = keyArray[4];
       
       xSemaphoreTake(KnobMutex, portMAX_DELAY); 
       knob3.update_rotation(localKnob3_current & 0x03); 
       knob2.update_rotation(localKnob2_current & 0x03); 
+      knob1.update_rotation(localKnob1_current & 0x03); 
+      knob0.update_rotation(localKnob0_current & 0x03);
       west = l_west; 
       east = l_east; 
       WAVEFORM =  knob2.knobRotation;
@@ -361,12 +429,10 @@ void displayUpdateTask(void * pvParameters) {
   // wave and volume display
     xSemaphoreTake(KnobMutex, portMAX_DELAY); 
     //knob
-    u8g2.drawStr(2,20,"volume");
-    u8g2.setCursor(50,20);
+    u8g2.drawStr(2,20,"vol");
+    u8g2.setCursor(30,20);
     u8g2.print(knob3.knobRotation,HEX);
-    u8g2.drawStr(60,20,"wave");
-    u8g2.setCursor(90,20);
-    u8g2.print(knob2.knobRotation,HEX);
+   
     
     //can 
     u8g2.drawStr(2,30,"East");
@@ -376,6 +442,35 @@ void displayUpdateTask(void * pvParameters) {
     u8g2.setCursor(90,30);
     u8g2.print(west,HEX);
     xSemaphoreGive(KnobMutex);
+
+
+    u8g2.drawStr(40,20,"mode");
+    
+    switch(mode_display){
+      case NORMAL_MODE:
+        u8g2.drawStr(80,20,"Normal");
+      break; 
+      case ADSR_MODE:
+        u8g2.drawStr(80,20,"ADSR");
+      break; 
+      case ECHO_MODE:
+        u8g2.drawStr(80,20,"ECHO");
+      break; 
+      case FILTER_MODE:
+        u8g2.drawStr(80,20,"FILTER");
+      break; 
+      case POLYPHONY_MODE:
+         u8g2.drawStr(80,20,"POLY");
+      break; 
+      default:; 
+  
+
+    }
+    
+
+
+
+
     u8g2.sendBuffer(); 
 
     //Toggle LED
@@ -435,6 +530,41 @@ void CAN_TX_Task (void * pvParameters) {
 }
 #endif
 
+void modeSelection(void *pvParameters)
+{
+  const TickType_t xFrequency = 250 / portTICK_PERIOD_MS;
+  TickType_t xLastWakeTime = xTaskGetTickCount();
+
+  while(1){
+    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    int8_t local_Actual_mode = Actual_mode;
+    xSemaphoreTake(ModeselectionMutex, portMAX_DELAY);
+    Joystick_Y = (int32_t)analogRead(JOYY_PIN);
+    xSemaphoreTake(keyArrayMutex, portMAX_DELAY);
+    uint8_t Joystick_click = (keyArray[5]&0x4)>>2;
+    xSemaphoreGive(keyArrayMutex);
+    if(Joystick_Y > 780)
+    {
+      mode_display += 1;
+      if(mode_display > MODE_MAX){ mode_display = NORMAL_MODE; }
+      if(Joystick_click == 1){ local_Actual_mode += 1; }
+      if(local_Actual_mode > MODE_MAX){ local_Actual_mode = NORMAL_MODE; }
+    }
+    else if(Joystick_Y < 200)
+    {
+      mode_display -= 1;
+      if(mode_display < 0 ){ mode_display = NORMAL_MODE; }
+      if(Joystick_click == 1){ local_Actual_mode -= 1; }
+      if(local_Actual_mode < 0 ){ local_Actual_mode = NORMAL_MODE; }
+    }
+    else{mode_display = mode_display; local_Actual_mode = local_Actual_mode;}
+    xSemaphoreGive(ModeselectionMutex);
+    __atomic_store_n(&Actual_mode, local_Actual_mode, __ATOMIC_RELAXED);
+
+
+  }
+}
+
 void setup() {
   // put your setup code here, to run once:
 
@@ -490,12 +620,15 @@ void setup() {
   CAN_RegisterTX_ISR(CAN_TX_ISR);
   #endif
 
+   
+
   CAN_Start();
   
 
   //multithreading
     //multithreading for scankey
 KnobMutex = xSemaphoreCreateMutex();
+ ModeselectionMutex = xSemaphoreCreateMutex();
 keyArrayMutex = xSemaphoreCreateMutex();
 RXMessageMutex = xSemaphoreCreateMutex();
 CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
@@ -545,8 +678,16 @@ xTaskCreate(
   & CantxHandle );
 #endif 
 
-vTaskStartScheduler();
+TaskHandle_t modeSelectionHandle = NULL;
+  xTaskCreate(
+      modeSelection,     /* Function that implements the task */
+      "modeselection",       /* Text name for the task */
+      20,               /* Stack size in words, not bytes */
+      NULL,             /* Parameter passed into the task */
+      1,                /* Task priority */
+      &modeSelectionHandle);
 
+vTaskStartScheduler();
 
 
 }
