@@ -9,7 +9,7 @@
 // //#include "bsp_dma.h"
 //#include "POLYPHONY.h"
 // //#include <ES_CAN.h>
-#define OCTAVE_NUM 4; 
+uint8_t  OCTAVE_NUM = 4; 
 const uint32_t sampleRate = 22000; 
 
 
@@ -211,9 +211,11 @@ uint8_t readCols(){
   return col_val; 
 
 }
+
 void sampleISR() {
-    static uint32_t phaseAcc = 0;
-  phaseAcc += currentStepSize;
+  static uint32_t phaseAcc = 0;
+  
+  phaseAcc += currentStepSize << (4-Key_press[1]);
   //phaseAcc += polyphony1.do_Polyphony();
   // phaseAcc += ((Actual_mode == POLYPHONY_MODE) ? polyphony1.do_Polyphony() : currentStepSize);
   //uint32_t currentStepSize_1 = currentStepSize;
@@ -318,15 +320,15 @@ void scanKeysTask(void * pvParameters) {
       
         for(int j = 0; j < 4 ; j++){
           if(((keyArray[i] >> j) & 0x01) == 0){//checking if it a key is press which is equivalent to have a bit == 0 
-            switch(WAVEFORM){
-            case SAWTOOTH: localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the array
-            case SIN: localsinstep = sin_StepSizes[i*4+j];
-            case RECTANGLE: ;
-            case TRIG: ;
-            }
+          localCurrentStepSize = stepSizes[i*4+j]; // looking step size in the arra 
           if(((l_prevkeystate[i] >> j) & 0x01) == 1){
               localTxmes[0] = 'P';
-              localTxmes[1] = OCTAVE_NUM;
+                if( l_east  == 0){
+                localTxmes[1] = 3;
+              }
+                            else {
+                localTxmes[1] = 4;
+              }
               localTxmes[2] = i*4+j;
               xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
               Key_press[0] = localTxmes[0] ; 
@@ -337,7 +339,13 @@ void scanKeysTask(void * pvParameters) {
             }
           else if(((l_prevkeystate[i] >> j) & 0x01) == 0) {
               localTxmes[0] = 'R';
-              localTxmes[1] = OCTAVE_NUM;
+              if( l_east  == 0){
+                localTxmes[1] = 3;
+              }
+              else {
+                localTxmes[1] = 4;
+              }
+
               localTxmes[2] = i*4+j;
               xSemaphoreTake(RXMessageMutex, portMAX_DELAY);
                 Key_press[0] = localTxmes[0] ; 
@@ -383,16 +391,8 @@ void scanKeysTask(void * pvParameters) {
 
       // waveform function
       if(localCurrentStepSize != 0){
-    
-      if(WAVEFORM == 0){
          __atomic_store_n(&currentStepSize, localCurrentStepSize, __ATOMIC_RELAXED);
         localCurrentStepSize = 0;
-        
-        }
-      else if (WAVEFORM == 1){
-        __atomic_store_n(&sin_step, localsinstep, __ATOMIC_RELAXED);
-        localsinstep = 0; 
-      }
       }
       
       
@@ -428,7 +428,7 @@ void displayUpdateTask(void * pvParameters) {
  
   // wave and volume display
     xSemaphoreTake(KnobMutex, portMAX_DELAY); 
-    //knob
+    //knobx
     u8g2.drawStr(2,20,"vol");
     u8g2.setCursor(30,20);
     u8g2.print(knob3.knobRotation,HEX);
@@ -443,7 +443,7 @@ void displayUpdateTask(void * pvParameters) {
     u8g2.print(west,HEX);
     xSemaphoreGive(KnobMutex);
 
-
+     xSemaphoreTake(ModeselectionMutex,portMAX_DELAY);
     u8g2.drawStr(40,20,"mode");
     
     switch(mode_display){
@@ -462,11 +462,12 @@ void displayUpdateTask(void * pvParameters) {
       case POLYPHONY_MODE:
          u8g2.drawStr(80,20,"POLY");
       break; 
-      default:; 
+      default:u8g2.drawStr(80,20,"Normal"); 
+     
   
 
     }
-    
+    xSemaphoreGive(ModeselectionMutex);
 
 
 
