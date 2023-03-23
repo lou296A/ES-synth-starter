@@ -7,8 +7,22 @@
 #include "FILTER.h"
 #include "ECHO.h"
 // //#include "bsp_dma.h"
-//#include "POLYPHONY.h"
+//include "POLYPHONY.h"
 // //#include <ES_CAN.h>
+// 
+//testing
+//#define DISABLE_THREADS
+//#define TEST_SCANKEYS
+//#define TEST_DISPLAY
+//#define TEST_MODESELECTION
+//#define TEST_CANTXTHREAD
+//#define TEST_CANRXTHREAD
+//#define TEST_SAMPLEISR
+//#define TEST_CANTX
+//#define TEST_CANRX
+
+
+
 uint8_t  OCTAVE_NUM = 4; 
 const uint32_t sampleRate = 22000; 
 
@@ -289,7 +303,9 @@ void scanKeysTask(void * pvParameters) {
   const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
   TickType_t xLastWakeTime = xTaskGetTickCount();
   while(1){
-    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    #ifndef TEST_SCANKEYS
+      vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    #endif
     uint32_t localCurrentStepSize;
     uint8_t  localKnob3;
     int8_t  lastRotation;
@@ -396,7 +412,9 @@ void scanKeysTask(void * pvParameters) {
       }
       
       
-    
+    #ifdef TEST_SCANKEYS
+      break;
+    #endif
       
       
   }
@@ -410,8 +428,9 @@ void displayUpdateTask(void * pvParameters) {
   static uint32_t count = 0;
   TickType_t xLastWakeTime = xTaskGetTickCount(); 
   while(1){
-    
-    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    #ifndef TEST_DISPLAY
+      vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    #endif
     if((east == 1 && west == 0)||(east == 0 && west == 0)){
     //Update display
     u8g2.clearBuffer();         // clear the internal memory
@@ -479,6 +498,9 @@ void displayUpdateTask(void * pvParameters) {
   
 
   }
+  #ifdef TEST_DISPLAY
+    break;
+  #endif
   }
 }
 #endif
@@ -514,6 +536,9 @@ void decodeTask(void * pvParameters){
       localCurrentStepSize = 0;
     }
     }
+    #ifdef TEST_CANRXTHREAD
+      break;
+    #endif
 
 
   }
@@ -524,9 +549,16 @@ void decodeTask(void * pvParameters){
 void CAN_TX_Task (void * pvParameters) {
 	uint8_t msgOut[8];
 	while (1) {
-	xQueueReceive(msgOutQ, msgOut, portMAX_DELAY);
+	  
+    xQueueReceive(msgOutQ, msgOut, portMAX_DELAY);
+
 		xSemaphoreTake(CAN_TX_Semaphore, portMAX_DELAY);
 		CAN_TX(0x123, msgOut);
+    
+    #ifdef TEST_CANTXTHREAD
+    xSemaphoreGive(CAN_TX_Semaphore);
+      break;
+    #endif
 	}
 }
 #endif
@@ -537,7 +569,9 @@ void modeSelection(void *pvParameters)
   TickType_t xLastWakeTime = xTaskGetTickCount();
 
   while(1){
-    vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    #ifndef TEST_MODESELECTION
+      vTaskDelayUntil( &xLastWakeTime, xFrequency );
+    #endif
     int8_t local_Actual_mode = Actual_mode;
     xSemaphoreTake(ModeselectionMutex, portMAX_DELAY);
     Joystick_Y = (int32_t)analogRead(JOYY_PIN);
@@ -561,6 +595,10 @@ void modeSelection(void *pvParameters)
     else{mode_display = mode_display; local_Actual_mode = local_Actual_mode;}
     xSemaphoreGive(ModeselectionMutex);
     __atomic_store_n(&Actual_mode, local_Actual_mode, __ATOMIC_RELAXED);
+
+    #ifdef TEST_MODESELECTION
+      break;
+    #endif
 
 
   }
@@ -608,6 +646,7 @@ void setup() {
   #endif 
   //instatiate CAN
   msgInQ = xQueueCreate(36,8);
+  
   msgOutQ = xQueueCreate(36,8);
  
   CAN_Init(false);
@@ -633,62 +672,146 @@ KnobMutex = xSemaphoreCreateMutex();
 keyArrayMutex = xSemaphoreCreateMutex();
 RXMessageMutex = xSemaphoreCreateMutex();
 CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
-TaskHandle_t scanKeysHandle = NULL;
-#ifndef scankeys  
-xTaskCreate(
-scanKeysTask,		/* Function that implements the task */
-"scanKeys",		/* Text name for the task */
-64,      		/* Stack size in words, not bytes */
-NULL,			/* Parameter passed into the task */
-2,			/* Task priority */
-&scanKeysHandle );  /* Pointer to store the task handle */
-#endif 
+
+#ifndef DISABLE_THREADS
+  TaskHandle_t scanKeysHandle = NULL;
+  #ifndef scankeys  
+  xTaskCreate(
+  scanKeysTask,		/* Function that implements the task */
+  "scanKeys",		/* Text name for the task */
+  64,      		/* Stack size in words, not bytes */
+  NULL,			/* Parameter passed into the task */
+  2,			/* Task priority */
+  &scanKeysHandle );  /* Pointer to store the task handle */
+  #endif 
 
 
-  //multithreading for display task
-TaskHandle_t displayUpdateHandle = NULL;
-#ifndef DISPLAY_TASK
-xTaskCreate(
-displayUpdateTask,		/* Function that implements the task */
-"displayupdate",		/* Text name for the task */
-256,      		/* Stack size in words, not bytes */
-NULL,			/* Parameter passed into the task */
-1,			/* Task priority */
-&displayUpdateHandle); /* Pointer to store the task handle */
-#endif 
+    //multithreading for display task
+  TaskHandle_t displayUpdateHandle = NULL;
+  #ifndef DISPLAY_TASK
+  xTaskCreate(
+  displayUpdateTask,		/* Function that implements the task */
+  "displayupdate",		/* Text name for the task */
+  256,      		/* Stack size in words, not bytes */
+  NULL,			/* Parameter passed into the task */
+  1,			/* Task priority */
+  &displayUpdateHandle); /* Pointer to store the task handle */
+  #endif 
 
-TaskHandle_t decodeDataHandle = NULL;
-#ifndef CAN_RX
-xTaskCreate(
-  decodeTask, 
-  "decodeRX", 
-  256, 
-  NULL, 
-  3, //temporary 
-  &decodeDataHandle);
+  TaskHandle_t decodeDataHandle = NULL;
+  #ifndef CAN_RX
+  xTaskCreate(
+    decodeTask, 
+    "decodeRX", 
+    256, 
+    NULL, 
+    3, //temporary 
+    &decodeDataHandle);
+  #endif
+
+  TaskHandle_t CantxHandle = NULL;
+  #ifndef CAN_TX
+  xTaskCreate(
+    CAN_TX_Task, 
+    "CANTX", 
+    256, 
+    NULL, 
+    3, //temporary 
+    & CantxHandle );
+  #endif 
+
+  TaskHandle_t modeSelectionHandle = NULL;
+    xTaskCreate(
+        modeSelection,     /* Function that implements the task */
+        "modeselection",       /* Text name for the task */
+        20,               /* Stack size in words, not bytes */
+        NULL,             /* Parameter passed into the task */
+        1,                /* Task priority */
+        &modeSelectionHandle);
 #endif
 
-TaskHandle_t CantxHandle = NULL;
-#ifndef CAN_TX
-xTaskCreate(
-  CAN_TX_Task, 
-  "CANTX", 
-  256, 
-  NULL, 
-  3, //temporary 
-  & CantxHandle );
-#endif 
+#ifdef TEST_SCANKEYS
 
-TaskHandle_t modeSelectionHandle = NULL;
-  xTaskCreate(
-      modeSelection,     /* Function that implements the task */
-      "modeselection",       /* Text name for the task */
-      20,               /* Stack size in words, not bytes */
-      NULL,             /* Parameter passed into the task */
-      1,                /* Task priority */
-      &modeSelectionHandle);
+  uint32_t startTime = micros();
+  for (int iter = 0; iter < 32; iter++) {
+  scanKeysTask(NULL);
+  }
+  Serial.println(micros() - startTime);
+  Serial.println((micros() - startTime)/32);
+  while (1);
+#endif
 
-vTaskStartScheduler();
+#ifdef TEST_DISPLAY
+
+  uint32_t startTime = micros();
+  for (int iter = 0; iter < 32; iter++) {
+  displayUpdateTask(NULL);
+  }
+  Serial.println(micros() - startTime);
+  Serial.println((micros() - startTime)/32);
+  while (1);
+
+#endif
+
+#ifdef TEST_MODESELECTION
+
+  uint32_t startTime = micros();
+  for (int iter = 0; iter < 32; iter++) {
+  modeSelection(NULL);
+  }
+  Serial.println(micros() - startTime);
+  Serial.println((micros() - startTime)/32);
+  while (1);
+
+#endif
+
+#ifdef TEST_SAMPLEISR
+
+  uint32_t startTime = micros();
+  for (int iter = 0; iter < 320; iter++) {
+  sampleISR();
+  }
+  Serial.println(micros() - startTime);
+  Serial.println((micros() - startTime)/320);
+  while (1);
+
+#endif
+
+#ifdef TEST_CANTXTHREAD
+  uint8_t msg[8]={'A',1,2,3,4,5,6,7};
+  for(int iter=0;iter<384;iter++){
+    xQueueSend(msgOutQ,msg,NULL);
+  }
+  uint32_t startTime=micros();
+  
+  for (int iter = 0; iter < 384; iter++) {
+    CAN_TX_Task(NULL);
+  }
+  Serial.println(micros() - startTime);
+  Serial.println((micros() - startTime)/384);
+  while (1);
+
+#endif
+
+#ifdef TEST_CANRXTHREAD
+  uint8_t msg[8]={'A',1,2,3,4,5,6,7};
+  for(int iter=0;iter<384;iter++){
+    xQueueSend(msgInQ,msg,NULL);
+  }
+
+   uint32_t startTime=micros();
+  for (int iter = 0; iter < 384; iter++) {
+    CAN_TX_Task(NULL);
+  }
+  Serial.println(micros() - startTime);
+  Serial.println((micros() - startTime)/384);
+  while (1);
+
+#endif
+#ifndef DISABLE_THREADS
+  vTaskStartScheduler();
+#endif
+
 
 
 }
