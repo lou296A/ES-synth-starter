@@ -5,6 +5,12 @@
 #include <ES_CAN.h>
 #define OCTAVE_NUM 4; 
 
+//define the task that will be used: 
+// #define CAN_TX
+//#define CAN_RX
+//#define DISPLAY_TASK 
+//#define scankeys
+
 //Constants
   const uint32_t interval = 100; //Display update interval
   
@@ -193,6 +199,8 @@ void sampleISR() {
   analogWrite(OUTR_PIN, Vout  + 128 );
   }
 }
+
+#ifndef CAN_RX
 void CAN_RX_ISR (void) {
 
 	uint8_t RX_Message_ISR[8];
@@ -201,9 +209,15 @@ void CAN_RX_ISR (void) {
 	xQueueSendFromISR(msgInQ, RX_Message_ISR, NULL);
 
 }
+#endif
+
+#ifndef CAN_TX
 void CAN_TX_ISR (void) {
 	xSemaphoreGiveFromISR(CAN_TX_Semaphore, NULL);
 }
+#endif
+
+#ifndef scankeys
 void scanKeysTask(void * pvParameters) {
    
   const TickType_t xFrequency = 20/portTICK_PERIOD_MS;
@@ -320,6 +334,9 @@ void scanKeysTask(void * pvParameters) {
   }
 
 }
+#endif
+
+#ifndef DISPLAY_TASK
 void displayUpdateTask(void * pvParameters) {
   const TickType_t xFrequency = 100/portTICK_PERIOD_MS;
   static uint32_t count = 0;
@@ -368,6 +385,9 @@ void displayUpdateTask(void * pvParameters) {
   }
   }
 }
+#endif
+
+#ifndef CAN_RX
 void decodeTask(void * pvParameters){
   uint32_t localCurrentStepSize ;
   uint8_t l_RXMessage[8] = {0};
@@ -402,6 +422,9 @@ void decodeTask(void * pvParameters){
 
   }
 }
+#endif
+
+#ifndef CAN_TX
 void CAN_TX_Task (void * pvParameters) {
 	uint8_t msgOut[8];
 	while (1) {
@@ -410,6 +433,8 @@ void CAN_TX_Task (void * pvParameters) {
 		CAN_TX(0x123, msgOut);
 	}
 }
+#endif
+
 void setup() {
   // put your setup code here, to run once:
 
@@ -443,26 +468,31 @@ void setup() {
   
   
   // interupt 
+   #ifndef scankeys
   TIM_TypeDef *Instance = TIM1;
   HardwareTimer *sampleTimer = new HardwareTimer(Instance);
   sampleTimer->setOverflow(22000, HERTZ_FORMAT);
   sampleTimer->attachInterrupt(sampleISR);
   sampleTimer->resume();
+  #endif 
   //instatiate CAN
   msgInQ = xQueueCreate(36,8);
   msgOutQ = xQueueCreate(36,8);
  
   CAN_Init(false);
   setCANFilter(0x123,0x7ff);
+  
+  #ifndef CAN_RX
   CAN_RegisterRX_ISR(CAN_RX_ISR);
+  #endif 
+
+  #ifndef CAN_TX
   CAN_RegisterTX_ISR(CAN_TX_ISR);
+  #endif
+
   CAN_Start();
   
- 
 
-  
-  
-  
   //multithreading
     //multithreading for scankey
 KnobMutex = xSemaphoreCreateMutex();
@@ -470,6 +500,7 @@ keyArrayMutex = xSemaphoreCreateMutex();
 RXMessageMutex = xSemaphoreCreateMutex();
 CAN_TX_Semaphore = xSemaphoreCreateCounting(3,3);
 TaskHandle_t scanKeysHandle = NULL;
+#ifndef scankeys  
 xTaskCreate(
 scanKeysTask,		/* Function that implements the task */
 "scanKeys",		/* Text name for the task */
@@ -477,9 +508,12 @@ scanKeysTask,		/* Function that implements the task */
 NULL,			/* Parameter passed into the task */
 2,			/* Task priority */
 &scanKeysHandle );  /* Pointer to store the task handle */
-  
+#endif 
+
+
   //multithreading for display task
 TaskHandle_t displayUpdateHandle = NULL;
+#ifndef DISPLAY_TASK
 xTaskCreate(
 displayUpdateTask,		/* Function that implements the task */
 "displayupdate",		/* Text name for the task */
@@ -487,49 +521,55 @@ displayUpdateTask,		/* Function that implements the task */
 NULL,			/* Parameter passed into the task */
 1,			/* Task priority */
 &displayUpdateHandle); /* Pointer to store the task handle */
+#endif 
 
 TaskHandle_t decodeDataHandle = NULL;
+#ifndef CAN_RX
 xTaskCreate(
   decodeTask, 
-  "decodeTX", 
+  "decodeRX", 
   256, 
   NULL, 
   3, //temporary 
   &decodeDataHandle);
-
+#endif
 
 TaskHandle_t CantxHandle = NULL;
+#ifndef CAN_TX
 xTaskCreate(
   CAN_TX_Task, 
-  "decodeTX", 
+  "CANTX", 
   256, 
   NULL, 
   3, //temporary 
   & CantxHandle );
+#endif 
 
 vTaskStartScheduler();
 
 
 
 }
-void print_binary_V2(uint8_t decimal){
- 
- unsigned char* binary = reinterpret_cast<unsigned char*>(&decimal);
- unsigned char mask = 0x80;
 
-  // Print the binary representation
-  Serial.print("col representation: ");
-  for (int i = 0; i < sizeof(decimal); i++) {
-    for (int j = 0; j < 8; j++) {
+
+// void print_binary_V2(uint8_t decimal){
+ 
+//  unsigned char* binary = reinterpret_cast<unsigned char*>(&decimal);
+//  unsigned char mask = 0x80;
+
+//   // Print the binary representation
+//   Serial.print("col representation: ");
+//   for (int i = 0; i < sizeof(decimal); i++) {
+//     for (int j = 0; j < 8; j++) {
       
-      Serial.print((binary[i] & mask) ? 1 : 0);
-      mask >>= 1;
-    } 
-    mask = 0x80;
-  }
-  Serial.println();
-}
-// generate sin wave 
+//       Serial.print((binary[i] & mask) ? 1 : 0);
+//       mask >>= 1;
+//     } 
+//     mask = 0x80;
+//   }
+//   Serial.println();
+// }
+// // generate sin wave 
 void loop() {}
 
     
